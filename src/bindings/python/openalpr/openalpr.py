@@ -45,7 +45,7 @@ class Alpr():
         try:
         # Load the .dll for Windows and the .so for Unix-based
             if platform.system().lower().find("windows") != -1:
-                self._openalprpy_lib = ctypes.cdll.LoadLibrary("openalprpy.dll")
+                self._openalprpy_lib = ctypes.cdll.LoadLibrary("libopenalprpy.dll")
             elif platform.system().lower().find("darwin") != -1:
                 self._openalprpy_lib = ctypes.cdll.LoadLibrary("libopenalprpy.dylib")
             else:
@@ -78,6 +78,11 @@ class Alpr():
 
         self._free_json_mem_func = self._openalprpy_lib.freeJsonMem
 
+        self._set_country_func = self._openalprpy_lib.setCountry
+        self._set_country_func.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+
+        self._set_prewarp_func = self._openalprpy_lib.setPrewarp
+        self._set_prewarp_func.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
 
         self._set_default_region_func = self._openalprpy_lib.setDefaultRegion
         self._set_default_region_func.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
@@ -95,6 +100,7 @@ class Alpr():
 
         self.alpr_pointer = self._initialize_func(country, config_file, runtime_dir)
 
+        self.loaded = True
 
     def unload(self):
         """
@@ -102,7 +108,10 @@ class Alpr():
 
         :return: None
         """
-        self._openalprpy_lib.dispose(self.alpr_pointer)
+
+        if self.loaded:
+            self.loaded = False
+            self._openalprpy_lib.dispose(self.alpr_pointer)
 
     def is_loaded(self):
         """
@@ -110,6 +119,9 @@ class Alpr():
 
         :return: A bool representing if OpenALPR is loaded or not
         """
+        if not self.loaded:
+            return False
+
         return self._is_loaded_func(self.alpr_pointer)
 
     def recognize_file(self, file_path):
@@ -168,10 +180,33 @@ class Alpr():
         """
         self._set_top_n_func(self.alpr_pointer, topn)
 
+    def set_country(self, country):
+        """
+        This sets the country for detecting license plates. For example,
+        setting country to "us" for United States or "eu" for Europe.
+
+        :param country: A unicode/ascii string (Python 2/3) or bytes array (Python 3)
+        :return: None
+        """
+        country = _convert_to_charp(country)
+        self._set_country_func(self.alpr_pointer, country)
+
+    def set_prewarp(self, prewarp):
+        """
+        Updates the prewarp configuration used to skew images in OpenALPR before
+        processing.
+
+        :param prewarp: A unicode/ascii string (Python 2/3) or bytes array (Python 3)
+        :return: None
+        """
+        prewarp = _convert_to_charp(prewarp)
+        self._set_prewarp_func(self.alpr_pointer, prewarp)
+
+
     def set_default_region(self, region):
         """
         This sets the default region for detecting license plates. For example,
-        setting region to "us" for United States or "eu" for Europe.
+        setting region to "md" for Maryland or "fr" for France.
 
         :param region: A unicode/ascii string (Python 2/3) or bytes array (Python 3)
         :return: None

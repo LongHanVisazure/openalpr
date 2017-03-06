@@ -28,7 +28,8 @@
 #include "licenseplatecandidate.h"
 #include "utility.h"
 #include "support/filesystem.h"
-#include "ocr.h"
+#include "ocr/ocrfactory.h"
+#include "ocr/ocr.h"
 
 using namespace std;
 using namespace cv;
@@ -44,26 +45,33 @@ const int RIGHT_ARROW_KEY = 3;
 const int DOWN_ARROW_KEY = 1;
 const int UP_ARROW_KEY= 0;
 
+const int ENTER_KEY_ONE = 13;
+const int ENTER_KEY_TWO = 10;
+
 #elif WIN32
 const int LEFT_ARROW_KEY = 2424832;
 const int RIGHT_ARROW_KEY = 2555904;
 
 const int DOWN_ARROW_KEY = 2621440;
 const int UP_ARROW_KEY = 2490368;
+
+const int ENTER_KEY_ONE = 13;
+const int ENTER_KEY_TWO = 10;
 #else
-const int LEFT_ARROW_KEY = 81;
-const int RIGHT_ARROW_KEY = 83;
+const int LEFT_ARROW_KEY = 1113937;
+const int RIGHT_ARROW_KEY = 1113939;
 
-const int DOWN_ARROW_KEY = 84;
-const int UP_ARROW_KEY= 82;
+const int DOWN_ARROW_KEY = 1113940;
+const int UP_ARROW_KEY= 1113938;
 
+const int ENTER_KEY_ONE = 1048586;
+const int ENTER_KEY_TWO = 1048586;
 #endif
 
 const string SPACE = " ";
 const int SPACE_KEY = 32;
 const int ESCAPE_KEY = 27;
-const int ENTER_KEY_ONE = 13;
-const int ENTER_KEY_TWO = 10;
+
 const int DASHBOARD_COLUMNS = 3;
 
 void showDashboard(vector<Mat> images, vector<bool> selectedImages, int selectedIndex);
@@ -87,13 +95,13 @@ int main( int argc, const char** argv )
   {
     printf("Use:\n\t%s country indirectory outdirectory\n",argv[0]);
     printf("Ex: \n\t%s eu ./pics/ ./out\n",argv[0]);
-    return 0;
+    return 1;
   }
 
   if (DirectoryExists(outDir.c_str()) == false)
   {
     printf("Output dir does not exist\n");
-    return 0;
+    return 2;
   }
 
   cout << "Usage: " << endl;
@@ -113,7 +121,7 @@ int main( int argc, const char** argv )
   config.debugGeneral = false;
   config.debugCharAnalysis = false;
   config.debugCharSegmenter = false;
-  OCR ocr(&config);
+  OCR* ocr = createOcr(&config);
 
   if (DirectoryExists(inDir.c_str()))
   {
@@ -140,6 +148,8 @@ int main( int argc, const char** argv )
 	PipelineData pipeline_data(frame, Rect(0, 0, frame.cols, frame.rows), &config);
 	cvtColor(frame, frame, CV_BGR2GRAY);
 	pipeline_data.crop_gray = Mat(frame, Rect(0, 0, frame.cols, frame.rows));
+    pipeline_data.thresholds = produceThresholds(pipeline_data.crop_gray, &config);
+    
         char statecode[3];
         statecode[0] = files[i][0];
         statecode[1] = files[i][1];
@@ -151,13 +161,10 @@ int main( int argc, const char** argv )
         if (pipeline_data.plate_inverted)
           bitwise_not(pipeline_data.crop_gray, pipeline_data.crop_gray);
         
-        CharacterSegmenter charSegmenter(&pipeline_data);
 
-        //ocr.cleanCharRegions(charSegmenter.thresholds, charSegmenter.characters);
-
-        ocr.performOCR(&pipeline_data);
-        ocr.postProcessor.analyze(statecodestr, 25);
-        cout << "OCR results: " << ocr.postProcessor.bestChars << endl;
+        ocr->performOCR(&pipeline_data);
+        ocr->postProcessor.analyze(statecodestr, 25);
+        cout << "OCR results: " << ocr->postProcessor.bestChars << endl;
 
         vector<bool> selectedBoxes(pipeline_data.thresholds.size());
         for (int z = 0; z < pipeline_data.thresholds.size(); z++)
@@ -360,7 +367,7 @@ vector<string> showCharSelection(Mat image, vector<Rect> charRegions, string sta
 
       if (curCharIdx >= charRegions.size())
       {
-        waitkey = ENTER_KEY_ONE;
+        waitkey = (int16_t) ENTER_KEY_ONE;
         break;
       }
     }

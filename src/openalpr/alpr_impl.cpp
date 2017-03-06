@@ -45,27 +45,15 @@ namespace alpr
       return;
     }
 
-    for (unsigned int i = 0; i < config->loaded_countries.size(); i++)
-    {
-      config->setCountry(config->loaded_countries[i]);
-
-      AlprRecognizers recognizer;
-      recognizer.plateDetector = createDetector(config);
-      recognizer.ocr = new OCR(config);
-
-      recognizer.stateDetector = new StateDetector(this->config->country, this->config->config_file_path, this->config->runtimeBaseDir);
-
-      recognizers[config->country] = recognizer;
-
-    }
+    prewarp = new PreWarp(config);
+    
+    loadRecognizers();
 
     setNumThreads(0);
 
     setDetectRegion(DEFAULT_DETECT_REGION);
     this->topN = DEFAULT_TOPN;
     setDefaultRegion("");
-    
-    prewarp = new PreWarp(config);
     
     timespec endTime;
     getTimeMonotonic(&endTime);
@@ -81,19 +69,12 @@ namespace alpr
     typedef std::map<std::string, AlprRecognizers>::iterator it_type;
     for(it_type iterator = recognizers.begin(); iterator != recognizers.end(); iterator++) {
 
-      if (iterator->second.plateDetector != ALPR_NULL_PTR)
-        delete iterator->second.plateDetector;
-
-      if (iterator->second.stateDetector != ALPR_NULL_PTR)
-        delete iterator->second.stateDetector;
-
-      if (iterator->second.ocr != ALPR_NULL_PTR)
-        delete iterator->second.ocr;
+      delete iterator->second.plateDetector;
+      delete iterator->second.stateDetector;
+      delete iterator->second.ocr;
     }
 
-    
-    if (prewarp != ALPR_NULL_PTR)
-      delete prewarp;
+    delete prewarp;
   }
 
   bool AlprImpl::isLoaded()
@@ -144,22 +125,33 @@ namespace alpr
 
     // Iterate through each country provided (typically just one)
     // and aggregate the results if necessary
-    ResultAggregator aggregator;
+    ResultAggregator country_aggregator(MERGE_PICK_BEST, topN, config);
     for (unsigned int i = 0; i < config->loaded_countries.size(); i++)
     {
       if (config->debugGeneral)
         cout << "Analyzing: " << config->loaded_countries[i] << endl;
 
       config->setCountry(config->loaded_countries[i]);
-      AlprFullDetails sub_results = analyzeSingleCountry(img, grayImg, warpedRegionsOfInterest);
-
+      
+      // Reapply analysis for each multiple analysis value set in the config,
+      // make a minor imperceptible tweak to the input image each time
+      ResultAggregator iter_aggregator(MERGE_COMBINE, topN, config);
+      for (unsigned int iteration = 0; iteration < config->analysis_count; iteration++)
+      {
+        Mat iteration_image = iter_aggregator.applyImperceptibleChange(grayImg, iteration);
+        //drawAndWait(iteration_image);
+        AlprFullDetails iter_results = analyzeSingleCountry(img, iteration_image, warpedRegionsOfInterest);
+        iter_aggregator.addResults(iter_results);
+      }
+      
+      AlprFullDetails sub_results = iter_aggregator.getAggregateResults();
       sub_results.results.epoch_time = start_time;
       sub_results.results.img_width = img.cols;
       sub_results.results.img_height = img.rows;
       
-      aggregator.addResults(sub_results);
+      country_aggregator.addResults(sub_results);
     }
-    response = aggregator.getAggregateResults();
+    response = country_aggregator.getAggregateResults();
 
     timespec endTime;
     getTimeMonotonic(&endTime);
@@ -298,6 +290,8 @@ namespace alpr
           plateResult.plate_points[pointidx].y = (int) cornerPoints[pointidx].y;
         }
 
+        
+        #ifndef SKIP_STATE_DETECTION
         if (detectRegion && country_recognizers.stateDetector->isLoaded())
         {
           std::vector<StateCandidate> state_candidates = country_recognizers.stateDetector->detect(pipeline_data.color_deskewed.data,
@@ -311,6 +305,7 @@ namespace alpr
             plateResult.regionConfidence = (int) state_candidates[0].confidence;
           }
         }
+        #endif
 
         if (plateResult.region.length() > 0 && country_recognizers.ocr->postProcessor.regionIsValid(plateResult.region) == false)
         {
@@ -547,6 +542,21 @@ namespace alpr
 
 
 
+  std::string AlprImpl::toJson( const AlprPlateResult result )
+  {
+    cJSON *resultObj = createJsonObj( &result );
+    
+    char *out;
+    out=cJSON_PrintUnformatted(resultObj);
+
+    cJSON_Delete(resultObj);
+
+    string response(out);
+
+    free(out);
+    
+    return response;
+  }
   cJSON* AlprImpl::createJsonObj(const AlprPlateResult* result)
   {
     cJSON *root, *coords, *candidates;
@@ -673,6 +683,38 @@ namespace alpr
     return allResults;
   }
 
+  void AlprImpl::setCountry(std::string country) {
+    config->load_countries(country);
+    loadRecognizers();
+  }
+
+  void AlprImpl::setPrewarp(std::string prewarp_config)
+  {
+    if (prewarp_config.length() == 0)
+      prewarp ->clear();
+    else
+      prewarp->initialize(prewarp_config);
+  }
+  
+  void AlprImpl::setMask(unsigned char* pixelData, int bytesPerPixel, int imgWidth, int imgHeight) {
+
+    try
+    {
+      int arraySize = imgWidth * imgHeight * bytesPerPixel;
+      cv::Mat imgData = cv::Mat(arraySize, 1, CV_8U, pixelData);
+      cv::Mat mask = imgData.reshape(bytesPerPixel, imgHeight);
+
+      typedef std::map<std::string, AlprRecognizers>::iterator it_type;
+      for (it_type iterator = recognizers.begin(); iterator != recognizers.end(); iterator++)
+        iterator->second.plateDetector->setMask(mask);
+    }
+    catch (cv::Exception& e)
+    {
+      std::cerr << "Caught (and ignoring) error in setMask: " << e.msg << std::endl;
+    }
+  }
+
+
 
   void AlprImpl::setDetectRegion(bool detectRegion)
   {
@@ -697,6 +739,32 @@ namespace alpr
     ss << OPENALPR_MAJOR_VERSION << "." << OPENALPR_MINOR_VERSION << "." << OPENALPR_PATCH_VERSION;
     return ss.str();
   }
+  
+  
+  void AlprImpl::loadRecognizers() {
+    for (unsigned int i = 0; i < config->loaded_countries.size(); i++)
+    {
+      config->setCountry(config->loaded_countries[i]);
+
+      if (recognizers.find(config->country) == recognizers.end())
+      {
+        // Country training data has not already been loaded.  Load it.
+        AlprRecognizers recognizer;
+        recognizer.plateDetector = createDetector(config, prewarp);
+        recognizer.ocr = createOcr(config);
+
+        #ifndef SKIP_STATE_DETECTION
+        recognizer.stateDetector = new StateDetector(this->config->country, this->config->config_file_path, this->config->runtimeBaseDir);
+        #else
+        recognizer.stateDetector = NULL;
+        #endif
+
+        recognizers[config->country] = recognizer;
+      }
+
+    }
+  }
+
   
   cv::Mat AlprImpl::getCharacterTransformMatrix(PipelineData* pipeline_data ) {
     std::vector<Point2f> crop_corners;

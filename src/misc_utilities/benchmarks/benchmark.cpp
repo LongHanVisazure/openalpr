@@ -31,6 +31,7 @@
 #include "endtoendtest.h"
 
 #include "detection/detectorfactory.h"
+#include "ocr/ocrfactory.h"
 #include "support/filesystem.h"
 
 using namespace std;
@@ -134,7 +135,8 @@ int main( int argc, const char** argv )
   else if (benchmarkName.compare("detection") == 0)
   {
     Config config(country);
-    Detector* plateDetector = createDetector(&config);
+    PreWarp prewarp(&config);
+    Detector* plateDetector = createDetector(&config, &prewarp);
 
     for (int i = 0; i< files.size(); i++)
     {
@@ -166,9 +168,9 @@ int main( int argc, const char** argv )
     alpr.config->setDebug(false);
     alpr.setDetectRegion(true);
 
-    Detector* plateDetector = createDetector(&config);
-    StateDetector stateDetector(country, config.config_file_path, config.runtimeBaseDir);
-    OCR ocr(&config);
+    PreWarp prewarp(&config);
+    Detector* plateDetector = createDetector(&config, &prewarp);
+    OCR* ocr = createOcr(&config);
 
     vector<double> endToEndTimes;
     vector<double> regionDetectionTimes;
@@ -229,14 +231,14 @@ int main( int argc, const char** argv )
             lpAnalysisPositiveTimes.push_back(analysisTime);
 
             getTimeMonotonic(&startTime);
-            ocr.performOCR(&pipeline_data);
+            ocr->performOCR(&pipeline_data);
             getTimeMonotonic(&endTime);
             double ocrTime = diffclock(startTime, endTime);
             cout << "\tRegion " << z << ": OCR time: " << ocrTime << "ms." << endl;
             ocrTimes.push_back(ocrTime);
 
             getTimeMonotonic(&startTime);
-            ocr.postProcessor.analyze("", 25);
+            ocr->postProcessor.analyze("", 25);
             getTimeMonotonic(&endTime);
             double postProcessTime = diffclock(startTime, endTime);
             cout << "\tRegion " << z << ": PostProcess time: " << postProcessTime << "ms." << endl;
